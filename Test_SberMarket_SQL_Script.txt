@@ -1,0 +1,95 @@
+select
+	o.id as order_id, o.user_id, o.item_total, o.promo_total, o.cost, o.total_cost, o.total_quantity, o.total_weight,
+	o.created_at, o. shipped_at, dw.starts_at as delivery_starts_at, dw.ends_at as delivery_ends_at,
+	o.store_id, s.city as store_city, s.retailer_id,
+	o.ship_address_id, a.lat, a.lon, o.state
+from orders o 
+left join delivery_windows_distinct as dw on dw.id = o.delivery_window_id
+left join stores as s on s.id = o.store_id 
+left join addresses as a on a.id = o.ship_address_id
+order by o.id;
+-- таблица транзакций
+
+
+create view troubles as(
+	select * from cancellations c 
+	union select * from replacements r 
+	);
+
+select 
+	tr.order_id, tr.item_id, tr.state,
+	s.city, s.retailer_id, o.store_id,
+	dw.starts_at, dw.ends_at, o.created_at, o. shipped_at
+from troubles as tr
+left join orders as o on o.id = tr.order_id
+left join stores as s on s.id = o.store_id 
+left join delivery_windows_distinct as dw on dw.id = o.delivery_window_id
+order by tr.order_id;
+-- таблица отмен и замен товаров
+
+
+-- проблема отмены товара может быть связанна с определенными товарами, городами или ритейлерами
+-- проверим это:
+
+
+select item_id , count(state) as troubles_count
+from troubles 
+group by 1
+order by troubles_count desc;
+-- число отмен не связано с определенным товаром
+
+
+select s.city, s.retailer_id, count(s.retailer_id) as count_retailer_tr,
+sum(count(s.retailer_id)) over (partition by s.city) as count_city_tr
+from troubles as tr
+left join orders as o on o.id = tr.order_id
+left join stores as s on s.id = o.store_id 
+left join delivery_windows_distinct as dw on dw.id = o.delivery_window_id
+group by 1, 2
+having s.city notnull
+order by count_city_tr desc, 
+count_retailer_tr desc;
+-- в некоторых городах и у некоторых ритейлеров количество отмен заметно выше
+-- посмотрим как это соотносится с общим числом заказов:
+
+
+select s.city , count(s.city) / (select count(state)/100 as proc from troubles) ::float  as proc_troubles,
+ord.proc_orders
+from troubles as tr
+left join orders as o on o.id = tr.order_id
+left join stores as s on s.id = o.store_id 
+left join(
+	select s.city, count(s.city) / (select count(state)/100 as proc from orders) ::float as proc_orders
+	from orders o
+	left join stores as s on s.id = o.store_id 
+	group by 1
+	having s.city notnull 
+	order by 2 desc
+	) as ord
+	on ord.city = s.city
+group by 1, 3
+having s.city notnull 
+order by proc_troubles desc;
+-- пропорции числа отмен и общего числа заказов по городам примерно такие же 
+-- значит можно сказать что число отмена не зависит от города
+
+
+select s.retailer_id , count(s.retailer_id ) / (select count(state)/100 as proc from troubles) ::float  as proc_troubles,
+ord.proc_orders
+from troubles as tr
+left join orders as o on o.id = tr.order_id
+left join stores as s on s.id = o.store_id 
+left join(
+	select s.retailer_id, count(s.retailer_id) / (select count(state)/100 as proc from orders) ::float as proc_orders
+	from orders o
+	left join stores as s on s.id = o.store_id 
+	group by 1
+	having s.retailer_id notnull 
+	order by 2 desc
+	) as ord
+	on ord.retailer_id = s.retailer_id
+group by 1, 3
+having s.retailer_id notnull 
+order by proc_troubles desc;
+-- пропорции числа отмен и общего числа заказов по ритейлерам примерно такие же 
+-- значит можно сказать что число отмена не зависит от ритейлера
